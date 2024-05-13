@@ -539,6 +539,18 @@ fn send_update(stream: &mut impl Write, line: u8, value: Option<bool>) -> io::Re
     Ok(())
 }
 
+fn read_command(stream: &mut impl Read) -> io::Result<(u8, bool)> {
+    let mut buf = [0; 2];
+    stream.read_exact(&mut buf)?;
+    let line = buf[0];
+    let value = match buf[1] {
+        0 => false,
+        1 => true,
+        _ => return Err(io::Error::other("bad input value")),
+    };
+    Ok((line, value))
+}
+
 fn run_external_server(state: Arc<Mutex<State>>) -> io::Result<()> {
     let path = Path::new("gpio.socket");
     if path.exists() {
@@ -560,15 +572,16 @@ fn run_external_server(state: Arc<Mutex<State>>) -> io::Result<()> {
         }
 
         loop {
-            let mut buf = [0; 2];
-            // TODO: on failure, tear down connection and accept a new one, don't panic/error
-            stream.read_exact(&mut buf)?;
-            let line = buf[0];
-            // TODO: bounds-check line and bail out early to avoid panic
-            let value = match buf[1] {
-                0 => false,
-                1 => true,
-                _ => panic!("bad input value"),
+            let (line, value) = match read_command(&mut stream) {
+                Ok(x) => x,
+                Err(e) => {
+                    info!("failed to read command: {e}");
+                    // Close the current connection, then go back to the listener loop.
+                    let _ = stream.shutdown(Shutdown::Both);
+                    let mut state = state.lock().unwrap();
+                    state.client = None;
+                    break;
+                },
             };
 
             {
