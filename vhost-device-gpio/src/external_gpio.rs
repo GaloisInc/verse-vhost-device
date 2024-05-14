@@ -3,10 +3,41 @@
 //! modify the input lines.
 //!
 //!
+//! # Protocol
+//!
+//! External controllers can interact with the GPIO device by connecting to `gpio.socket`.  Only
+//! one controller can be connected at a time; a new controller can't connect until the current
+//! controller has disconnected.
+//!
+//! The protocol for external controllers is very simple.  All messages to and from the controller
+//! are two bytes: the first byte is the index of a GPIO line, and the second byte is the value.
+//!
+//! ## Device to controller
+//!
+//! The device reports the "output value" of each GPIO line to the controller.  For a line whose
+//! direction is `OUT`, the output value is either 0 or 1.  For non-`OUT` lines, the output value
+//! is -1 (unset/invalid).
+//!
+//! * When a controller connects, the device sends a message for each `OUT` line giving its current
+//!   value.
+//! * When a line's output value changes (either because its direction is `OUT` and its value
+//!   changed, or because its direction changed to or from `OUT`), the device sends a message for
+//!   the line giving its new value.
+//!
+//! ## Controller to device
+//!
+//! The controller may adjust any GPIO line's "input value" at any time by sending a message
+//! containing the line index and the new value.  The input value of a line is the value the driver
+//! will observe if it sets the line's direction to `IN` and reads its value.  If the line's
+//! direction is not `IN`, the input value is still updated internally, but the driver won't
+//! observe the change until it sets the direction to `IN`.
+//!
+//!
 //! # Specification
 //!
 //! Behavior is intended to conform to the "GPIO Device" section of the VirtIO spec:
 //! https://docs.oasis-open.org/virtio/virtio/v1.2/csd01/virtio-v1.2-csd01.html
+//!
 //!
 //! # Interrupts
 //!
@@ -268,7 +299,8 @@ impl LineState {
         Ok(notify)
     }
 
-    /// Check whether the current 
+    /// Check whether the current `value_in` matches a level-triggered interrupt condition that's
+    /// enabled in `irq_type_mask`.
     fn value_in_matches_level_irq(&self) -> bool {
         debug_assert!(VIRTIO_GPIO_IRQ_TYPE_LEVEL_HIGH <= u8::MAX as u16);
         debug_assert!(VIRTIO_GPIO_IRQ_TYPE_LEVEL_LOW <= u8::MAX as u16);
