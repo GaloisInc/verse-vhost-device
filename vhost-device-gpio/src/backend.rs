@@ -5,7 +5,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-use log::error;
+use log::{error, trace};
 use std::num::ParseIntError;
 use std::process::exit;
 use std::sync::{Arc, RwLock};
@@ -22,6 +22,7 @@ use crate::vhu_gpio::VhostUserGpioBackend;
 
 #[cfg(any(test, feature = "mock_gpio"))]
 use crate::mock_gpio::MockGpioDevice;
+use crate::external_gpio::ExternalGpioDevice;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
@@ -79,21 +80,24 @@ enum GpioDeviceType {
     SimulatedDevice {
         num_gpios: u32,
     },
+    ExternalDevice {
+        num_gpios: u32,
+    },
 }
 
 impl GpioDeviceType {
     fn new(cfg: &str) -> Result<Self> {
-        match cfg.strip_prefix('s') {
-            #[cfg(any(test, feature = "mock_gpio"))]
-            Some(num) => {
-                let num_gpios = num.parse::<u32>().map_err(Error::ParseFailure)?;
-                Ok(GpioDeviceType::SimulatedDevice { num_gpios })
-            }
-            _ => {
-                let id = cfg.parse::<u32>().map_err(Error::ParseFailure)?;
-                Ok(GpioDeviceType::PhysicalDevice { id })
-            }
+        #[cfg(any(test, feature = "mock_gpio"))]
+        if let Some(num) = cfg.strip_prefix('s') {
+            let num_gpios = num.parse::<u32>().map_err(Error::ParseFailure)?;
+            return Ok(GpioDeviceType::SimulatedDevice { num_gpios });
         }
+        if let Some(num) = cfg.strip_prefix('e') {
+            let num_gpios = num.parse::<u32>().map_err(Error::ParseFailure)?;
+            return Ok(GpioDeviceType::ExternalDevice { num_gpios });
+        }
+        let id = cfg.parse::<u32>().map_err(Error::ParseFailure)?;
+        Ok(GpioDeviceType::PhysicalDevice { id })
     }
 }
 
@@ -120,6 +124,7 @@ impl DeviceConfig {
             }
             #[cfg(any(test, feature = "mock_gpio"))]
             GpioDeviceType::SimulatedDevice { num_gpios: _ } => {}
+            GpioDeviceType::ExternalDevice { num_gpios: _ } => {}
         }
 
         self.inner.push(device);
@@ -216,6 +221,11 @@ fn start_backend(args: GpioArgs) -> Result<()> {
                 #[cfg(any(test, feature = "mock_gpio"))]
                 GpioDeviceType::SimulatedDevice { num_gpios } => {
                     let controller = MockGpioDevice::open(num_gpios).unwrap(); // cannot fail
+                    start_device_backend(controller, socket.clone())?;
+                }
+                GpioDeviceType::ExternalDevice { num_gpios } => {
+                    trace!("starting external device with {num_gpios} lines");
+                    let controller = ExternalGpioDevice::open(num_gpios).unwrap(); // cannot fail
                     start_device_backend(controller, socket.clone())?;
                 }
             };

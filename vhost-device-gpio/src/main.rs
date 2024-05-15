@@ -16,6 +16,8 @@ mod vhu_gpio;
 #[cfg(target_env = "gnu")]
 mod virtio_gpio;
 
+mod external_gpio;
+
 #[cfg(target_env = "gnu")]
 fn main() {
     backend::gpio_init()
