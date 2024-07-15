@@ -35,6 +35,8 @@ pub(crate) enum Error {
     DeviceCountMismatch(usize, usize),
     #[error("Duplicate device detected: {0}")]
     DeviceDuplicate(u32),
+    #[error("Duplicate external device detected")]
+    DeviceDuplicateExternal,
     #[error("Failed while parsing to integer: {0:?}")]
     ParseFailure(ParseIntError),
     #[error("Could not open gpio device: {0}")]
@@ -60,6 +62,11 @@ struct GpioArgs {
     /// Location of vhost-user Unix domain socket. This is suffixed by 0,1,2..socket_count-1.
     #[clap(short, long)]
     socket_path: String,
+
+    /// Location of Unix domain socket where the externally-controlled GPIO backend will listen for
+    /// clients.
+    #[clap(short, long)]
+    external_socket_path: Option<String>,
 
     /// Number of guests (sockets) to connect to.
     #[clap(short = 'c', long, default_value_t = 1)]
@@ -124,7 +131,13 @@ impl DeviceConfig {
             }
             #[cfg(any(test, feature = "mock_gpio"))]
             GpioDeviceType::SimulatedDevice { num_gpios: _ } => {}
-            GpioDeviceType::ExternalDevice { num_gpios: _ } => {}
+            GpioDeviceType::ExternalDevice { num_gpios: _ } => {
+                let has_external = self.inner.iter()
+                    .any(|dev| matches!(dev, GpioDeviceType::ExternalDevice { .. }));
+                if has_external {
+                    return Err(Error::DeviceDuplicateExternal);
+                }
+            }
         }
 
         self.inner.push(device);
@@ -149,6 +162,7 @@ impl TryFrom<&str> for DeviceConfig {
 #[derive(PartialEq, Debug)]
 struct GpioConfiguration {
     socket_path: String,
+    external_socket_path: String,
     socket_count: usize,
     devices: DeviceConfig,
 }
@@ -173,6 +187,8 @@ impl TryFrom<GpioArgs> for GpioConfiguration {
         Ok(GpioConfiguration {
             socket_path: args.socket_path,
             socket_count: args.socket_count,
+            external_socket_path: args.external_socket_path
+                .unwrap_or_else(|| "gpio.socket".into()),
             devices,
         })
     }
@@ -202,6 +218,7 @@ fn start_backend(args: GpioArgs) -> Result<()> {
 
     for i in 0..config.socket_count {
         let socket = config.socket_path.to_owned() + &i.to_string();
+        let external_socket = config.external_socket_path.to_owned();
         let cfg = config.devices.inner[i];
 
         let handle: JoinHandle<Result<()>> = spawn(move || loop {
@@ -225,7 +242,10 @@ fn start_backend(args: GpioArgs) -> Result<()> {
                 }
                 GpioDeviceType::ExternalDevice { num_gpios } => {
                     trace!("starting external device with {num_gpios} lines");
-                    let controller = ExternalGpioDevice::open(num_gpios).unwrap(); // cannot fail
+                    let controller = ExternalGpioDevice::open_external(
+                        num_gpios,
+                        external_socket.clone(),
+                    );
                     start_device_backend(controller, socket.clone())?;
                 }
             };
