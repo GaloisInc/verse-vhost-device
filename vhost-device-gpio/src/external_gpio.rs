@@ -445,8 +445,8 @@ pub struct ExternalGpioDevice {
     state: Arc<Mutex<State>>,
 }
 
-impl GpioDevice for ExternalGpioDevice {
-    fn open(ngpio: u32) -> Result<Self> {
+impl ExternalGpioDevice {
+    pub fn open_external(ngpio: u32, external_socket: String) -> Self {
         debug!("new ExternalGpioDevice with {} lines", ngpio);
         let state = State {
             lines: (0..ngpio).map(|_| LineState::new()).collect(),
@@ -456,13 +456,20 @@ impl GpioDevice for ExternalGpioDevice {
 
         let state_ = state.clone();
         thread::spawn(move || {
-            run_external_server(state_).unwrap();
+            run_external_server(state_, external_socket).unwrap();
         });
 
-        Ok(ExternalGpioDevice {
+        ExternalGpioDevice {
             ngpio: ngpio as u16,
             state,
-        })
+        }
+    }
+}
+
+impl GpioDevice for ExternalGpioDevice {
+    fn open(_ngpio: u32) -> Result<Self> {
+        panic!("GpioDevice::open is not supported for ExternalGpioDevice - \
+            use open_external instead");
     }
 
     fn num_gpios(&self) -> Result<u16> {
@@ -583,8 +590,11 @@ fn read_command(stream: &mut impl Read) -> io::Result<(u8, bool)> {
     Ok((line, value))
 }
 
-fn run_external_server(state: Arc<Mutex<State>>) -> io::Result<()> {
-    let path = Path::new("gpio.socket");
+fn run_external_server(
+    state: Arc<Mutex<State>>,
+    external_socket: String,
+) -> io::Result<()> {
+    let path = Path::new(&external_socket);
     if path.exists() {
         fs::remove_file(path)?;
     }
