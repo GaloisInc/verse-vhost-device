@@ -2,3 +2,4 @@ kcov_output/
 target/
 .vscode/
 *.swp
+*.deb
