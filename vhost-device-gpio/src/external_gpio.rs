@@ -134,7 +134,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
-use log::{info, debug, trace};
+use log::{warn, info, debug, trace};
 use crate::gpio::{GpioDevice, Result, Error};
 use crate::virtio_gpio::*;
 
@@ -600,37 +600,54 @@ fn run_external_server(
     }
     let listener = UnixListener::bind(path)?;
     for stream in listener.incoming() {
-        let mut stream = stream?;
+        let stream = stream?;
+
+        match handle_client(&state, stream) {
+            Ok(()) => {},
+            Err(e) => {
+                warn!("error handling client: {}", e);
+                continue;
+            },
+        }
+
+        state.lock().unwrap().client = None;
+    }
+
+    Ok(())
+}
+
+fn handle_client(
+    state: &Mutex<State>,
+    mut stream: UnixStream,
+) -> io::Result<()> {
+    {
+        let mut state = state.lock().unwrap();
+        state.client = Some(stream.try_clone()?);
+        for (i, line) in state.lines.iter().enumerate() {
+            if line.dir == Some(Direction::Out) {
+                info!("send initial state to client: {} = {}", i, line.value_out);
+                send_update(&mut stream, i as u8, Some(line.value_out))?;
+            }
+        }
+    }
+
+    loop {
+        let (line, value) = match read_command(&mut stream) {
+            Ok(x) => x,
+            Err(e) => {
+                info!("failed to read command: {e}");
+                // Close the current connection, then go back to the listener loop.
+                let _ = stream.shutdown(Shutdown::Both);
+                let mut state = state.lock().unwrap();
+                state.client = None;
+                break;
+            },
+        };
 
         {
             let mut state = state.lock().unwrap();
-            state.client = Some(stream.try_clone()?);
-            for (i, line) in state.lines.iter().enumerate() {
-                if line.dir == Some(Direction::Out) {
-                    info!("send initial state to client: {} = {}", i, line.value_out);
-                    send_update(&mut stream, i as u8, Some(line.value_out))?;
-                }
-            }
-        }
-
-        loop {
-            let (line, value) = match read_command(&mut stream) {
-                Ok(x) => x,
-                Err(e) => {
-                    info!("failed to read command: {e}");
-                    // Close the current connection, then go back to the listener loop.
-                    let _ = stream.shutdown(Shutdown::Both);
-                    let mut state = state.lock().unwrap();
-                    state.client = None;
-                    break;
-                },
-            };
-
-            {
-                let mut state = state.lock().unwrap();
-                info!("received input change from client: {} = {}", line, value);
-                state.lines[line as usize].set_value_in(value);
-            }
+            info!("received input change from client: {} = {}", line, value);
+            state.lines[line as usize].set_value_in(value);
         }
     }
 
